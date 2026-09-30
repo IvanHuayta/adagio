@@ -14,21 +14,32 @@ subprojects {
     project.evaluationDependsOn(":app")
 }
 
-subprojects {
-    // 1. Asignar namespace automático a librerías de terceros que carezcan de él
-    plugins.withId("com.android.library") {
+subprojects { project ->
+    // Inyectar namespace a dependencias antiguas que carezcan de él
+    project.plugins.withId("com.android.library") {
         if (!project.android.hasProperty("namespace") || project.android.namespace == null) {
             project.android.namespace = project.group ?: "com.example.${project.name.replace('-', '_')}"
         }
     }
 
-    // 2. Alinear compilación de Java a versión 17 para todos los submódulos
+    // Forzar opciones de compilación en Java directamente en el objeto android si existe
+    project.gradle.projectsEvaluated {
+        if (project.hasProperty("android")) {
+            project.android {
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
+                }
+            }
+        }
+    }
+
+    // Forzar Java 17 en todas las tareas de compilación Java y Kotlin
     tasks.withType(JavaCompile).configureEach {
         sourceCompatibility = JavaVersion.VERSION_17.toString()
         targetCompatibility = JavaVersion.VERSION_17.toString()
     }
 
-    // 3. Alinear compilación de Kotlin a versión 17 para todos los submódulos
     tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)

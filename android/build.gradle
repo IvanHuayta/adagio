@@ -21,19 +21,16 @@ subprojects {
         }
     }
 
-    // Forzar Java 17 en la compilación de Java de todos los subproyectos (incluidas librerías nativas)
-    afterEvaluate { project ->
-        if (project.hasProperty("android")) {
-            project.android {
-                compileOptions {
-                    sourceCompatibility = JavaVersion.VERSION_17
-                    targetCompatibility = JavaVersion.VERSION_17
-                }
+    // Alinear Java 17 para todos los subproyectos (Java y Kotlin)
+    plugins.withType(com.android.build.gradle.BasePlugin) {
+        project.android {
+            compileOptions {
+                sourceCompatibility JavaVersion.VERSION_17
+                targetCompatibility JavaVersion.VERSION_17
             }
         }
     }
 
-    // Forzar Java 17 en la compilación de Kotlin
     tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)

@@ -13,6 +13,7 @@ dependencies:
 
   # Reproducción de audio y permisos
   just_audio: ^0.9.46
+  just_audio_background: ^0.0.1-beta.13
   on_audio_query: ^2.9.0
   permission_handler: ^11.3.1
   audio_service: ^0.18.12

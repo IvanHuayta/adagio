@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -13,7 +12,7 @@ void main() {
 }
 
 // =============================================================================
-// GESTIÓN DE SKINS Y TEMAS EN ESPAÑOL
+// GESTIÓN DE SKINS Y TEMAS
 // =============================================================================
 enum AppSkin { azulCyber, carmesiFuego, rosaNeon, retroVinyl, claroSuave }
 
@@ -137,7 +136,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
   List<SongModel> _songs = [];
   Set<int> _favoriteSongIds = {};
-  Map<int, int> _playCounts = {};
+  final Map<int, int> _playCounts = {};
 
   bool _isLoading = true;
   bool _hasPermission = false;
@@ -146,6 +145,8 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   bool _showPlaylist = false;
   int _selectedTab = 0; // 0: Todas, 1: Favoritas, 2: Más Escuchadas
   bool _isShuffle = false;
+  bool _isDjMix = false; // MODO DJ MIX AUTOMÁTICO
+  bool _isTransitioning = false;
   LoopMode _loopMode = LoopMode.off;
 
   late AnimationController _rotationController;
@@ -161,7 +162,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
     _waveController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 800),
+      duration: const Duration(milliseconds: 700),
     )..repeat(reverse: true);
 
     _loadUserData();
@@ -180,6 +181,18 @@ class _MainMusicScreenState extends State<MainMusicScreen>
         _playNext();
       }
     });
+
+    // MONITOR DE POSICIÓN PARA MODO DJ MIX
+    _audioPlayer.positionStream.listen((position) {
+      if (_isDjMix && _audioPlayer.playing && !_isTransitioning) {
+        final duration = _audioPlayer.duration ?? Duration.zero;
+        if (duration.inSeconds > 50) {
+          if (duration.inSeconds - position.inSeconds <= 20) {
+            _triggerDjMixTransition();
+          }
+        }
+      }
+    });
   }
 
   @override
@@ -188,6 +201,27 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     _rotationController.dispose();
     _waveController.dispose();
     super.dispose();
+  }
+
+  Future<void> _triggerDjMixTransition() async {
+    _isTransitioning = true;
+
+    for (double v = 1.0; v >= 0.1; v -= 0.1) {
+      await _audioPlayer.setVolume(v);
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+
+    if (_songs.isNotEmpty) {
+      int nextRandom = math.Random().nextInt(_songs.length);
+      await _playSongAtIndex(nextRandom, _songs, startAtSecond: 25);
+    }
+
+    for (double v = 0.1; v <= 1.0; v += 0.1) {
+      await _audioPlayer.setVolume(v);
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+
+    _isTransitioning = false;
   }
 
   Future<void> _loadUserData() async {
@@ -265,7 +299,8 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     return _songs;
   }
 
-  Future<void> _playSongAtIndex(int index, List<SongModel> currentList) async {
+  Future<void> _playSongAtIndex(int index, List<SongModel> currentList,
+      {int startAtSecond = 0}) async {
     if (index < 0 || index >= currentList.length) return;
     try {
       final song = currentList[index];
@@ -276,7 +311,13 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       });
 
       _incrementPlayCount(song.id);
+
       await _audioPlayer.setAudioSource(AudioSource.uri(Uri.parse(song.data)));
+
+      if (startAtSecond > 0) {
+        await _audioPlayer.seek(Duration(seconds: startAtSecond));
+      }
+
       _audioPlayer.play();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -287,9 +328,9 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
   void _playNext() {
     if (_songs.isEmpty) return;
-    if (_isShuffle) {
+    if (_isShuffle || _isDjMix) {
       int nextIndex = math.Random().nextInt(_songs.length);
-      _playSongAtIndex(nextIndex, _songs);
+      _playSongAtIndex(nextIndex, _songs, startAtSecond: _isDjMix ? 25 : 0);
     } else {
       int nextIndex = (_currentIndex + 1) % _songs.length;
       _playSongAtIndex(nextIndex, _songs);
@@ -300,6 +341,65 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     if (_songs.isEmpty) return;
     int prevIndex = (_currentIndex - 1 + _songs.length) % _songs.length;
     _playSongAtIndex(prevIndex, _songs);
+  }
+
+  // DIÁLOGO ACERCA DE LA APLICACIÓN
+  void _showAboutDialog(SkinTheme theme) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: theme.cardColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Icon(Icons.graphic_eq, color: theme.primary, size: 28),
+            const SizedBox(width: 10),
+            Text(
+              'Acerca de Adagio',
+              style:
+                  TextStyle(color: theme.primary, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Adagio Music Player',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            const Text('Versión: 1.0.0+1',
+                style: TextStyle(color: Colors.grey)),
+            const Divider(height: 24),
+            Row(
+              children: [
+                Icon(Icons.person, color: theme.primary, size: 20),
+                const SizedBox(width: 8),
+                const Text('Desarrollado por: Huayta®',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(Icons.email, color: theme.primary, size: 20),
+                const SizedBox(width: 8),
+                const SelectableText('ivan.huayta@live.com',
+                    style: TextStyle(color: Colors.grey)),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cerrar', style: TextStyle(color: theme.primary)),
+          ),
+        ],
+      ),
+    );
   }
 
   void _confirmarSalida() {
@@ -348,21 +448,44 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: Row(
-          children: [
-            Icon(Icons.graphic_eq, color: theme.primary),
-            const SizedBox(width: 8),
-            Text(
-              'Adagio',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 22,
-                color: theme.primary,
+        title: GestureDetector(
+          onTap: () => _showAboutDialog(theme),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.graphic_eq, color: theme.primary),
+              const SizedBox(width: 8),
+              Text(
+                'Adagio',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 22,
+                  color: theme.primary,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
         actions: [
+          // BOTÓN DJ MIX SIN NINGUNA MARCA REGISTRADA
+          IconButton(
+            icon: Icon(
+              Icons.auto_awesome,
+              color: _isDjMix ? theme.accent : theme.primary.withOpacity(0.5),
+            ),
+            tooltip: 'Modo DJ Mix',
+            onPressed: () {
+              setState(() => _isDjMix = !_isDjMix);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(_isDjMix
+                      ? 'Modo DJ Mix Activado'
+                      : 'Modo Normal Activado'),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
+          ),
           IconButton(
             icon: Icon(_showPlaylist ? Icons.graphic_eq : Icons.queue_music,
                 color: theme.primary),
@@ -406,15 +529,17 @@ class _MainMusicScreenState extends State<MainMusicScreen>
                 : _buildPlayerView(theme, currentSong),
           ),
           _buildExpandedBottomControls(theme, currentSong),
-          // FIRMA
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6.0),
-            child: Text(
-              'Desarrollado por Huayta®',
-              style: TextStyle(
-                color: theme.primary.withOpacity(0.6),
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
+          GestureDetector(
+            onTap: () => _showAboutDialog(theme),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6.0),
+              child: Text(
+                'Desarrollado por Huayta®',
+                style: TextStyle(
+                  color: theme.primary.withOpacity(0.6),
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ),
@@ -423,30 +548,30 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     );
   }
 
-  // VISTA PRINCIPAL DEL REPRODUCTOR
+  // VISTA PRINCIPAL
   Widget _buildPlayerView(SkinTheme theme, SongModel? song) {
     bool isFav = song != null && _favoriteSongIds.contains(song.id);
 
     return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
-        // CARÁTULA GIRATORIA / DISCO
+        // DISCO GIRATORIO
         Container(
-          margin: const EdgeInsets.all(16),
+          margin: const EdgeInsets.symmetric(vertical: 8),
           child: RotationTransition(
             turns: _rotationController,
             child: Container(
-              width: 210,
-              height: 210,
+              width: 240,
+              height: 240,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: Colors.black,
-                border: Border.all(color: theme.primary, width: 4),
+                border: Border.all(color: theme.primary, width: 5),
                 boxShadow: [
                   BoxShadow(
-                    color: theme.primary.withOpacity(0.3),
-                    blurRadius: 20,
-                    spreadRadius: 2,
+                    color: theme.primary.withOpacity(0.4),
+                    blurRadius: 30,
+                    spreadRadius: 5,
                   )
                 ],
               ),
@@ -456,8 +581,8 @@ class _MainMusicScreenState extends State<MainMusicScreen>
                       ? QueryArtworkWidget(
                           id: song.id,
                           type: ArtworkType.AUDIO,
-                          artworkWidth: 190,
-                          artworkHeight: 190,
+                          artworkWidth: 220,
+                          artworkHeight: 220,
                           artworkFit: BoxFit.cover,
                           nullArtworkWidget: _buildDefaultCover(theme),
                         )
@@ -468,11 +593,9 @@ class _MainMusicScreenState extends State<MainMusicScreen>
           ),
         ),
 
-        const SizedBox(height: 10),
-
-        // DETALLES Y BOTÓN DE ME GUSTA
+        // TITULO Y ARTISTA
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          padding: const EdgeInsets.symmetric(horizontal: 28.0),
           child: Row(
             children: [
               Expanded(
@@ -485,15 +608,15 @@ class _MainMusicScreenState extends State<MainMusicScreen>
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 18,
+                        fontSize: 20,
                         fontWeight: FontWeight.bold,
                         color: theme.primary,
                       ),
                     ),
-                    const SizedBox(height: 2),
+                    const SizedBox(height: 4),
                     Text(
                       song?.artist ?? 'Adagio Player',
-                      style: const TextStyle(color: Colors.grey, fontSize: 13),
+                      style: const TextStyle(color: Colors.grey, fontSize: 14),
                     ),
                   ],
                 ),
@@ -503,7 +626,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
                   icon: Icon(
                     isFav ? Icons.favorite : Icons.favorite_border,
                     color: isFav ? Colors.red : theme.primary,
-                    size: 28,
+                    size: 30,
                   ),
                   onPressed: () => _toggleFavorite(song.id),
                 ),
@@ -511,9 +634,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
           ),
         ),
 
-        const SizedBox(height: 15),
-
-        // VISUALIZADOR DE ESPECTRO
+        // ESPECTRO DE ONDAS
         _buildVisualizerAnimation(theme),
       ],
     );
@@ -521,14 +642,14 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
   Widget _buildDefaultCover(SkinTheme theme) {
     return Container(
-      width: 190,
-      height: 190,
+      width: 220,
+      height: 220,
       color: theme.cardColor,
       child: Center(
         child: CircleAvatar(
-          radius: 35,
+          radius: 42,
           backgroundColor: theme.primary,
-          child: const Icon(Icons.music_note, size: 40, color: Colors.white),
+          child: const Icon(Icons.music_note, size: 50, color: Colors.white),
         ),
       ),
     );
@@ -540,16 +661,23 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       builder: (context, child) {
         return Row(
           mainAxisAlignment: MainAxisAlignment.center,
-          children: List.generate(14, (index) {
-            double height = 8 +
-                (math.sin(_waveController.value * math.pi + index) * 22).abs();
+          children: List.generate(18, (index) {
+            double height = 10 +
+                (math.sin(_waveController.value * math.pi + (index * 0.4)) * 38)
+                    .abs();
             return Container(
-              margin: const EdgeInsets.symmetric(horizontal: 2.5),
-              width: 4.5,
-              height: _audioPlayer.playing ? height : 5,
+              margin: const EdgeInsets.symmetric(horizontal: 3.0),
+              width: 6.0,
+              height: _audioPlayer.playing ? height : 6,
               decoration: BoxDecoration(
                 color: theme.primary,
-                borderRadius: BorderRadius.circular(4),
+                borderRadius: BorderRadius.circular(6),
+                boxShadow: [
+                  BoxShadow(
+                    color: theme.primary.withOpacity(0.3),
+                    blurRadius: 4,
+                  )
+                ],
               ),
             );
           }),
@@ -558,7 +686,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     );
   }
 
-  // VISTA DE LISTA CON PESTAÑAS (TODAS, FAVORITAS, MÁS ESCUCHADAS)
   Widget _buildPlaylistView(SkinTheme theme) {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
     if (!_hasPermission) {
@@ -574,7 +701,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
     return Column(
       children: [
-        // SELECTOR DE PESTAÑAS
         Container(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           padding: const EdgeInsets.all(4),
@@ -645,7 +771,8 @@ class _MainMusicScreenState extends State<MainMusicScreen>
                           onPressed: () => _toggleFavorite(song.id),
                         ),
                         onTap: () {
-                          _playSongAtIndex(index, filteredSongs);
+                          _playSongAtIndex(index, filteredSongs,
+                              startAtSecond: _isDjMix ? 25 : 0);
                           setState(() => _showPlaylist = false);
                         },
                       ),
@@ -682,7 +809,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     );
   }
 
-  // CONTROLES DE REPRODUCCIÓN (SLIDER + NAVEGACIÓN)
+  // CONTROLES DE REPRODUCCIÓN
   Widget _buildExpandedBottomControls(SkinTheme theme, SongModel? song) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -738,6 +865,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
                   Icons.shuffle,
                   color: _isShuffle ? theme.primary : Colors.grey,
                 ),
+                tooltip: 'Modo Aleatorio',
                 onPressed: () => setState(() => _isShuffle = !_isShuffle),
               ),
               IconButton(
@@ -764,7 +892,8 @@ class _MainMusicScreenState extends State<MainMusicScreen>
                           _audioPlayer.pause();
                         } else {
                           if (_currentIndex == -1 && _songs.isNotEmpty) {
-                            _playSongAtIndex(0, _songs);
+                            _playSongAtIndex(0, _songs,
+                                startAtSecond: _isDjMix ? 25 : 0);
                           } else {
                             _audioPlayer.play();
                           }
@@ -785,6 +914,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
                   color:
                       _loopMode == LoopMode.one ? theme.primary : Colors.grey,
                 ),
+                tooltip: 'Modo Repetir',
                 onPressed: () {
                   setState(() {
                     _loopMode =
@@ -800,7 +930,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     );
   }
 
-  // ECUALIZADOR AVANZADO DE 8 BANDAS Y PRESETS
+  // ECUALIZADOR
   void _openEqualizerModal(BuildContext context, SkinTheme theme) {
     showModalBottomSheet(
       context: context,

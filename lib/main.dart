@@ -2,13 +2,22 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:audio_service/audio_service.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Inicialización de notificaciones multimedia nativas y pantalla de bloqueo
+  await JustAudioBackground.init(
+    androidNotificationChannelId: 'com.adagio.music.channel.audio',
+    androidNotificationChannelName: 'Adagio Reproducción',
+    androidNotificationOngoing: true,
+    androidStopForegroundOnPause: false,
+  );
+
   runApp(const AdagioApp());
 }
 
@@ -114,7 +123,7 @@ class _AdagioAppState extends State<AdagioApp> {
 }
 
 // =============================================================================
-// PANTALLA PRINCIPAL
+// PANTALLA PRINCIPAL CON NAVEGACIÓN Y REPRODUCTOR
 // =============================================================================
 class MainMusicScreen extends StatefulWidget {
   final AppSkin currentSkin;
@@ -176,6 +185,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       } else {
         _rotationController.stop();
         _waveController.stop();
+        _saveLastPlaybackState();
       }
 
       if (state.processingState == ProcessingState.completed) {
@@ -197,10 +207,48 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
   @override
   void dispose() {
+    _saveLastPlaybackState();
     _audioPlayer.dispose();
     _rotationController.dispose();
     _waveController.dispose();
     super.dispose();
+  }
+
+  Future<void> _saveLastPlaybackState() async {
+    if (_currentIndex < 0 || _currentIndex >= _songs.length) return;
+    final prefs = await SharedPreferences.getInstance();
+    final currentSong = _songs[_currentIndex];
+    final positionMs = _audioPlayer.position.inMilliseconds;
+
+    await prefs.setInt('adagio_last_song_id', currentSong.id);
+    await prefs.setInt('adagio_last_position_ms', positionMs);
+  }
+
+  Future<void> _restoreLastPlaybackState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastSongId = prefs.getInt('adagio_last_song_id');
+    final lastPositionMs = prefs.getInt('adagio_last_position_ms') ?? 0;
+
+    if (lastSongId != null && _songs.isNotEmpty) {
+      int index = _songs.indexWhere((s) => s.id == lastSongId);
+      if (index != -1) {
+        final song = _songs[index];
+        setState(() => _currentIndex = index);
+
+        final audioSource = AudioSource.uri(
+          Uri.parse(song.data),
+          tag: MediaItem(
+            id: song.id.toString(),
+            album: song.album ?? "Adagio",
+            title: song.title,
+            artist: song.artist ?? "Adagio Player",
+          ),
+        );
+
+        await _audioPlayer.setAudioSource(audioSource);
+        await _audioPlayer.seek(Duration(milliseconds: lastPositionMs));
+      }
+    }
   }
 
   Future<void> _triggerDjMixTransition() async {
@@ -254,13 +302,11 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   }
 
   Future<void> _requestPermissionAndScan() async {
-    // Solicitar permiso de almacenamiento de audio
     PermissionStatus status = await Permission.audio.request();
     if (!status.isGranted) {
       status = await Permission.storage.request();
     }
 
-    // Pedir permiso explícito de notificaciones (Android 13+)
     if (await Permission.notification.isDenied) {
       await Permission.notification.request();
     }
@@ -270,7 +316,8 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     });
 
     if (_hasPermission) {
-      _scanAudioFiles();
+      await _scanAudioFiles();
+      await _restoreLastPlaybackState();
     } else {
       setState(() => _isLoading = false);
     }
@@ -318,16 +365,13 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
       _incrementPlayCount(song.id);
 
-      // Crear el AudioSource vinculando los metadatos de MediaItem para Android
       final audioSource = AudioSource.uri(
         Uri.parse(song.data),
         tag: MediaItem(
           id: song.id.toString(),
-          album: song.album ?? "Adagio Album",
+          album: song.album ?? "Adagio",
           title: song.title,
-          artist: song.artist ?? "Artista Desconocido",
-          artUri: Uri.parse(
-              'content://media/external/audio/media/${song.id}/albumart'),
+          artist: song.artist ?? "Adagio Player",
         ),
       );
 
@@ -436,7 +480,8 @@ class _MainMusicScreenState extends State<MainMusicScreen>
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
             ),
-            onPressed: () {
+            onPressed: () async {
+              await _saveLastPlaybackState();
               _audioPlayer.stop();
               exit(0);
             },

@@ -1,23 +1,31 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
-  runZonedGuarded(() async {
-    WidgetsFlutterBinding.ensureInitialized();
-    runApp(const AdagioApp());
-  }, (error, stack) {
-    debugPrint('Error global capturado: $error');
-  });
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    await JustAudioBackground.init(
+      androidNotificationChannelId: 'com.adagio.music.channel.audio',
+      androidNotificationChannelName: 'Adagio Playback',
+      androidNotificationOngoing: true,
+      androidStopForegroundOnPause: false,
+    );
+  } catch (e) {
+    debugPrint("Error al inicializar servicio en segundo plano: $e");
+  }
+
+  runApp(const AdagioApp());
 }
 
 // =============================================================================
-// GESTIÓN DE SKINS Y TEMAS
+// TEMAS Y SKINS
 // =============================================================================
 enum AppSkin { azulCyber, carmesiFuego, rosaNeon, retroVinyl, claroSuave }
 
@@ -118,7 +126,7 @@ class _AdagioAppState extends State<AdagioApp> {
 }
 
 // =============================================================================
-// PANTALLA PRINCIPAL CON NAVEGACIÓN Y REPRODUCTOR
+// PANTALLA PRINCIPAL
 // =============================================================================
 class MainMusicScreen extends StatefulWidget {
   final AppSkin currentSkin;
@@ -136,10 +144,11 @@ class MainMusicScreen extends StatefulWidget {
 
 class _MainMusicScreenState extends State<MainMusicScreen>
     with TickerProviderStateMixin {
-  late AudioPlayer _audioPlayer;
-  late OnAudioQuery _audioQuery;
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  final OnAudioQuery _audioQuery = OnAudioQuery();
 
   List<SongModel> _songs = [];
+  List<GenreModel> _genres = [];
   Set<int> _favoriteSongIds = {};
   final Map<int, int> _playCounts = {};
 
@@ -148,7 +157,11 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   int _currentIndex = -1;
 
   bool _showPlaylist = false;
-  int _selectedTab = 0;
+  int _selectedTab =
+      0; // 0: Todas, 1: Favoritas, 2: Más Escuchadas, 3: Por Género
+  String? _selectedGenreName;
+  List<SongModel> _genreSongs = [];
+
   bool _isShuffle = false;
   bool _isDjMix = false;
   bool _isTransitioning = false;
@@ -160,9 +173,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   @override
   void initState() {
     super.initState();
-    _audioPlayer = AudioPlayer();
-    _audioQuery = OnAudioQuery();
-
     _rotationController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 12),
@@ -173,45 +183,34 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       duration: const Duration(milliseconds: 700),
     )..repeat(reverse: true);
 
-    _initApp();
-  }
+    _loadUserData();
+    _requestPermissionAndScan();
 
-  Future<void> _initApp() async {
-    try {
-      await _loadUserData();
-      await _requestPermissionAndScan();
+    _audioPlayer.playerStateStream.listen((state) {
+      if (state.playing) {
+        _rotationController.repeat();
+        if (!_waveController.isAnimating) _waveController.repeat(reverse: true);
+      } else {
+        _rotationController.stop();
+        _waveController.stop();
+        _saveLastPlaybackState();
+      }
 
-      _audioPlayer.playerStateStream.listen((state) {
-        if (!mounted) return;
-        if (state.playing) {
-          _rotationController.repeat();
-          if (!_waveController.isAnimating)
-            _waveController.repeat(reverse: true);
-        } else {
-          _rotationController.stop();
-          _waveController.stop();
-          _saveLastPlaybackState();
-        }
+      if (state.processingState == ProcessingState.completed) {
+        _playNext();
+      }
+    });
 
-        if (state.processingState == ProcessingState.completed) {
-          _playNext();
-        }
-      });
-
-      _audioPlayer.positionStream.listen((position) {
-        if (_isDjMix && _audioPlayer.playing && !_isTransitioning) {
-          final duration = _audioPlayer.duration ?? Duration.zero;
-          if (duration.inSeconds > 50) {
-            if (duration.inSeconds - position.inSeconds <= 20) {
-              _triggerDjMixTransition();
-            }
+    _audioPlayer.positionStream.listen((position) {
+      if (_isDjMix && _audioPlayer.playing && !_isTransitioning) {
+        final duration = _audioPlayer.duration ?? Duration.zero;
+        if (duration.inSeconds > 50) {
+          if (duration.inSeconds - position.inSeconds <= 20) {
+            _triggerDjMixTransition();
           }
         }
-      });
-    } catch (e) {
-      debugPrint("Error inicializando app: $e");
-      if (mounted) setState(() => _isLoading = false);
-    }
+      }
+    });
   }
 
   @override
@@ -224,35 +223,40 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   }
 
   Future<void> _saveLastPlaybackState() async {
-    try {
-      if (_currentIndex < 0 || _currentIndex >= _songs.length) return;
-      final prefs = await SharedPreferences.getInstance();
-      final currentSong = _songs[_currentIndex];
-      final positionMs = _audioPlayer.position.inMilliseconds;
+    if (_currentIndex < 0 || _currentIndex >= _songs.length) return;
+    final prefs = await SharedPreferences.getInstance();
+    final currentSong = _songs[_currentIndex];
+    final positionMs = _audioPlayer.position.inMilliseconds;
 
-      await prefs.setInt('adagio_last_song_id', currentSong.id);
-      await prefs.setInt('adagio_last_position_ms', positionMs);
-    } catch (_) {}
+    await prefs.setInt('adagio_last_song_id', currentSong.id);
+    await prefs.setInt('adagio_last_position_ms', positionMs);
   }
 
   Future<void> _restoreLastPlaybackState() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final lastSongId = prefs.getInt('adagio_last_song_id');
-      final lastPositionMs = prefs.getInt('adagio_last_position_ms') ?? 0;
+    final prefs = await SharedPreferences.getInstance();
+    final lastSongId = prefs.getInt('adagio_last_song_id');
+    final lastPositionMs = prefs.getInt('adagio_last_position_ms') ?? 0;
 
-      if (lastSongId != null && _songs.isNotEmpty) {
-        int index = _songs.indexWhere((s) => s.id == lastSongId);
-        if (index != -1) {
-          final song = _songs[index];
-          if (mounted) setState(() => _currentIndex = index);
+    if (lastSongId != null && _songs.isNotEmpty) {
+      int index = _songs.indexWhere((s) => s.id == lastSongId);
+      if (index != -1) {
+        final song = _songs[index];
+        setState(() => _currentIndex = index);
 
-          await _audioPlayer
-              .setAudioSource(AudioSource.uri(Uri.parse(song.data)));
-          await _audioPlayer.seek(Duration(milliseconds: lastPositionMs));
-        }
+        final audioSource = AudioSource.uri(
+          Uri.parse(song.data),
+          tag: MediaItem(
+            id: song.id.toString(),
+            album: song.album ?? "Adagio",
+            title: song.title,
+            artist: song.artist ?? "Adagio Player",
+          ),
+        );
+
+        await _audioPlayer.setAudioSource(audioSource);
+        await _audioPlayer.seek(Duration(milliseconds: lastPositionMs));
       }
-    } catch (_) {}
+    }
   }
 
   Future<void> _triggerDjMixTransition() async {
@@ -263,9 +267,10 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       await Future.delayed(const Duration(milliseconds: 200));
     }
 
-    if (_songs.isNotEmpty) {
-      int nextRandom = math.Random().nextInt(_songs.length);
-      await _playSongAtIndex(nextRandom, _songs, startAtSecond: 25);
+    List<SongModel> pool = _getFilteredSongs();
+    if (pool.isNotEmpty) {
+      int nextRandom = math.Random().nextInt(pool.length);
+      await _playSongAtIndex(nextRandom, pool, startAtSecond: 25);
     }
 
     for (double v = 0.1; v <= 1.0; v += 0.1) {
@@ -277,32 +282,26 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   }
 
   Future<void> _loadUserData() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final favsList = prefs.getStringList('adagio_favorites') ?? [];
-      if (mounted) {
-        setState(() {
-          _favoriteSongIds = favsList.map((id) => int.parse(id)).toSet();
-        });
-      }
-    } catch (_) {}
+    final prefs = await SharedPreferences.getInstance();
+    final favsList = prefs.getStringList('adagio_favorites') ?? [];
+    setState(() {
+      _favoriteSongIds = favsList.map((id) => int.parse(id)).toSet();
+    });
   }
 
   Future<void> _toggleFavorite(int songId) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      setState(() {
-        if (_favoriteSongIds.contains(songId)) {
-          _favoriteSongIds.remove(songId);
-        } else {
-          _favoriteSongIds.add(songId);
-        }
-      });
-      await prefs.setStringList(
-        'adagio_favorites',
-        _favoriteSongIds.map((id) => id.toString()).toList(),
-      );
-    } catch (_) {}
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      if (_favoriteSongIds.contains(songId)) {
+        _favoriteSongIds.remove(songId);
+      } else {
+        _favoriteSongIds.add(songId);
+      }
+    });
+    await prefs.setStringList(
+      'adagio_favorites',
+      _favoriteSongIds.map((id) => id.toString()).toList(),
+    );
   }
 
   Future<void> _incrementPlayCount(int songId) async {
@@ -312,54 +311,68 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   }
 
   Future<void> _requestPermissionAndScan() async {
-    try {
-      PermissionStatus status = await Permission.audio.request();
-      if (!status.isGranted) {
-        status = await Permission.storage.request();
-      }
+    PermissionStatus status = await Permission.audio.request();
+    if (!status.isGranted) {
+      status = await Permission.storage.request();
+    }
 
-      if (await Permission.notification.isDenied) {
-        await Permission.notification.request();
-      }
+    if (await Permission.notification.isDenied) {
+      await Permission.notification.request();
+    }
 
-      if (mounted) {
-        setState(() {
-          _hasPermission = status.isGranted;
-        });
-      }
+    setState(() {
+      _hasPermission = status.isGranted;
+    });
 
-      if (_hasPermission) {
-        await _scanAudioFiles();
-        await _restoreLastPlaybackState();
-      } else {
-        if (mounted) setState(() => _isLoading = false);
-      }
-    } catch (e) {
-      if (mounted) setState(() => _isLoading = false);
+    if (_hasPermission) {
+      await _scanAudioFiles();
+      await _restoreLastPlaybackState();
+    } else {
+      setState(() => _isLoading = false);
     }
   }
 
+  // REESCANEO Y ELIMINACIÓN DE ARCHIVOS INEXISTENTES
   Future<void> _scanAudioFiles() async {
-    if (mounted) setState(() => _isLoading = true);
-    try {
-      List<SongModel> songs = await _audioQuery.querySongs(
-        sortType: SongSortType.TITLE,
-        orderType: OrderType.ASC_OR_SMALLER,
-        uriType: UriType.EXTERNAL,
-        ignoreCase: true,
-      );
+    setState(() => _isLoading = true);
 
-      songs = songs.where((s) => (s.duration ?? 0) > 10000).toList();
+    List<SongModel> songs = await _audioQuery.querySongs(
+      sortType: SongSortType.TITLE,
+      orderType: OrderType.ASC_OR_SMALLER,
+      uriType: UriType.EXTERNAL,
+      ignoreCase: true,
+    );
 
-      if (mounted) {
-        setState(() {
-          _songs = songs;
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => _isLoading = false);
-    }
+    // Filtrar canciones de más de 10 seg y verificar existencia física en disco
+    songs = songs.where((s) {
+      if ((s.duration ?? 0) <= 10000) return false;
+      return File(s.data).existsSync();
+    }).toList();
+
+    List<GenreModel> genres = await _audioQuery.queryGenres();
+
+    setState(() {
+      _songs = songs;
+      _genres = genres;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _filterByGenre(GenreModel genre) async {
+    setState(() => _isLoading = true);
+    List<SongModel> songs = await _audioQuery.queryAudiosFrom(
+      AudiosFromType.GENRE_ID,
+      genre.id,
+    );
+
+    songs = songs.where((s) => File(s.data).existsSync()).toList();
+
+    setState(() {
+      _selectedGenreName = genre.genre;
+      _genreSongs = songs;
+      _isLoading = false;
+      _selectedTab = 3;
+    });
   }
 
   List<SongModel> _getFilteredSongs() {
@@ -370,6 +383,8 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       sortedList.sort(
           (a, b) => (_playCounts[b.id] ?? 0).compareTo(_playCounts[a.id] ?? 0));
       return sortedList.where((s) => (_playCounts[s.id] ?? 0) > 0).toList();
+    } else if (_selectedTab == 3 && _genreSongs.isNotEmpty) {
+      return _genreSongs;
     }
     return _songs;
   }
@@ -387,7 +402,17 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
       _incrementPlayCount(song.id);
 
-      await _audioPlayer.setAudioSource(AudioSource.uri(Uri.parse(song.data)));
+      final audioSource = AudioSource.uri(
+        Uri.parse(song.data),
+        tag: MediaItem(
+          id: song.id.toString(),
+          album: song.album ?? "Adagio",
+          title: song.title,
+          artist: song.artist ?? "Adagio Player",
+        ),
+      );
+
+      await _audioPlayer.setAudioSource(audioSource);
 
       if (startAtSecond > 0) {
         await _audioPlayer.seek(Duration(seconds: startAtSecond));
@@ -395,29 +420,33 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
       _audioPlayer.play();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error al reproducir audio: $e')),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al reproducir audio: $e')),
+      );
     }
   }
 
   void _playNext() {
-    if (_songs.isEmpty) return;
+    List<SongModel> pool = _getFilteredSongs();
+    if (pool.isEmpty) pool = _songs;
+    if (pool.isEmpty) return;
+
     if (_isShuffle || _isDjMix) {
-      int nextIndex = math.Random().nextInt(_songs.length);
-      _playSongAtIndex(nextIndex, _songs, startAtSecond: _isDjMix ? 25 : 0);
+      int nextIndex = math.Random().nextInt(pool.length);
+      _playSongAtIndex(nextIndex, pool, startAtSecond: _isDjMix ? 25 : 0);
     } else {
-      int nextIndex = (_currentIndex + 1) % _songs.length;
-      _playSongAtIndex(nextIndex, _songs);
+      int nextIndex = (_currentIndex + 1) % pool.length;
+      _playSongAtIndex(nextIndex, pool);
     }
   }
 
   void _playPrevious() {
-    if (_songs.isEmpty) return;
-    int prevIndex = (_currentIndex - 1 + _songs.length) % _songs.length;
-    _playSongAtIndex(prevIndex, _songs);
+    List<SongModel> pool = _getFilteredSongs();
+    if (pool.isEmpty) pool = _songs;
+    if (pool.isEmpty) return;
+
+    int prevIndex = (_currentIndex - 1 + pool.length) % pool.length;
+    _playSongAtIndex(prevIndex, pool);
   }
 
   void _showAboutDialog(SkinTheme theme) {
@@ -497,11 +526,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
             onPressed: () async {
               await _saveLastPlaybackState();
               _audioPlayer.stop();
-              if (Platform.isAndroid || Platform.isIOS) {
-                exit(0);
-              } else {
-                if (mounted) Navigator.pop(context);
-              }
+              exit(0);
             },
             child: const Text('Salir'),
           ),
@@ -775,8 +800,39 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
     return Column(
       children: [
+        // CABECERA Y REESCANEO (REFRESH)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                _selectedTab == 3 && _selectedGenreName != null
+                    ? 'Género: $_selectedGenreName'
+                    : 'Biblioteca Adagio',
+                style: TextStyle(
+                    color: theme.primary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14),
+              ),
+              IconButton(
+                icon: Icon(Icons.refresh, color: theme.primary),
+                tooltip: 'Actualizar biblioteca',
+                onPressed: () async {
+                  await _scanAudioFiles();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content: Text('Biblioteca de audio actualizada.')),
+                  );
+                },
+              )
+            ],
+          ),
+        ),
+
+        // SELECTOR DE PESTAÑAS (TODAS, FAVORITAS, MÁS ESCUCHADAS, GÉNEROS)
         Container(
-          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
             color: theme.cardColor,
@@ -786,73 +842,91 @@ class _MainMusicScreenState extends State<MainMusicScreen>
             children: [
               _buildTabButton('Todas', 0, theme),
               _buildTabButton('Favoritas', 1, theme),
-              _buildTabButton('Más Escuchadas', 2, theme),
+              _buildTabButton('Top', 2, theme),
+              _buildTabButton('Géneros', 3, theme),
             ],
           ),
         ),
-        Expanded(
-          child: filteredSongs.isEmpty
-              ? const Center(child: Text('No hay canciones en esta sección.'))
-              : ListView.builder(
-                  itemCount: filteredSongs.length,
-                  itemBuilder: (context, index) {
-                    final song = filteredSongs[index];
-                    final isSelected =
-                        _songs[_currentIndex < 0 ? 0 : _currentIndex].id ==
-                            song.id;
-                    final isFav = _favoriteSongIds.contains(song.id);
 
-                    return Container(
-                      margin: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? theme.primary.withOpacity(0.2)
-                            : theme.cardColor.withOpacity(0.5),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: ListTile(
-                        leading: QueryArtworkWidget(
-                          id: song.id,
-                          type: ArtworkType.AUDIO,
-                          nullArtworkWidget: CircleAvatar(
-                            backgroundColor: theme.cardColor,
-                            child: Icon(Icons.music_note, color: theme.primary),
-                          ),
-                        ),
-                        title: Text(
-                          song.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontWeight: isSelected
-                                ? FontWeight.bold
-                                : FontWeight.normal,
-                            color: isSelected ? theme.primary : null,
-                          ),
-                        ),
-                        subtitle: Text(
-                          '${song.artist ?? 'Desconocido'} • (${_playCounts[song.id] ?? 0} repr.)',
-                          maxLines: 1,
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                        trailing: IconButton(
-                          icon: Icon(
-                            isFav ? Icons.favorite : Icons.favorite_border,
-                            color: isFav ? Colors.red : Colors.grey,
-                            size: 20,
-                          ),
-                          onPressed: () => _toggleFavorite(song.id),
-                        ),
-                        onTap: () {
-                          _playSongAtIndex(index, filteredSongs,
-                              startAtSecond: _isDjMix ? 25 : 0);
-                          setState(() => _showPlaylist = false);
-                        },
-                      ),
+        // VISTA SEGÚN LA PESTAÑA SELECCIONADA
+        Expanded(
+          child: _selectedTab == 3 && _genreSongs.isEmpty
+              ? ListView.builder(
+                  itemCount: _genres.length,
+                  itemBuilder: (context, index) {
+                    final genre = _genres[index];
+                    return ListTile(
+                      leading: Icon(Icons.style_rounded, color: theme.primary),
+                      title: Text(genre.genre),
+                      subtitle: Text('${genre.numOfSongs} canciones'),
+                      onTap: () => _filterByGenre(genre),
                     );
                   },
-                ),
+                )
+              : filteredSongs.isEmpty
+                  ? const Center(
+                      child: Text('No hay canciones en esta sección.'))
+                  : ListView.builder(
+                      itemCount: filteredSongs.length,
+                      itemBuilder: (context, index) {
+                        final song = filteredSongs[index];
+                        final isSelected =
+                            _songs[_currentIndex < 0 ? 0 : _currentIndex].id ==
+                                song.id;
+                        final isFav = _favoriteSongIds.contains(song.id);
+
+                        return Container(
+                          margin: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? theme.primary.withOpacity(0.2)
+                                : theme.cardColor.withOpacity(0.5),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: ListTile(
+                            leading: QueryArtworkWidget(
+                              id: song.id,
+                              type: ArtworkType.AUDIO,
+                              nullArtworkWidget: CircleAvatar(
+                                backgroundColor: theme.cardColor,
+                                child: Icon(Icons.music_note,
+                                    color: theme.primary),
+                              ),
+                            ),
+                            title: Text(
+                              song.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontWeight: isSelected
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                                color: isSelected ? theme.primary : null,
+                              ),
+                            ),
+                            subtitle: Text(
+                              '${song.artist ?? 'Desconocido'} • (${_playCounts[song.id] ?? 0} repr.)',
+                              maxLines: 1,
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            trailing: IconButton(
+                              icon: Icon(
+                                isFav ? Icons.favorite : Icons.favorite_border,
+                                color: isFav ? Colors.red : Colors.grey,
+                                size: 20,
+                              ),
+                              onPressed: () => _toggleFavorite(song.id),
+                            ),
+                            onTap: () {
+                              _playSongAtIndex(index, filteredSongs,
+                                  startAtSecond: _isDjMix ? 25 : 0);
+                              setState(() => _showPlaylist = false);
+                            },
+                          ),
+                        );
+                      },
+                    ),
         ),
       ],
     );
@@ -862,7 +936,15 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     bool isSelected = _selectedTab == index;
     return Expanded(
       child: GestureDetector(
-        onTap: () => setState(() => _selectedTab = index),
+        onTap: () {
+          setState(() {
+            _selectedTab = index;
+            if (index != 3) {
+              _genreSongs = [];
+              _selectedGenreName = null;
+            }
+          });
+        },
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 8),
           decoration: BoxDecoration(

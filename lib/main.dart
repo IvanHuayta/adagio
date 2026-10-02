@@ -13,19 +13,19 @@ Future<void> main() async {
   try {
     await JustAudioBackground.init(
       androidNotificationChannelId: 'com.adagio.music.channel.audio',
-      androidNotificationChannelName: 'Adagio Playback',
+      androidNotificationChannelName: 'Adagio Reproducción',
       androidNotificationOngoing: true,
       androidStopForegroundOnPause: false,
     );
   } catch (e) {
-    debugPrint("Error al inicializar servicio en segundo plano: $e");
+    debugPrint("Error inicializando notificación: $e");
   }
 
   runApp(const AdagioApp());
 }
 
 // =============================================================================
-// TEMAS Y SKINS
+// GESTIÓN DE SKINS Y TEMAS
 // =============================================================================
 enum AppSkin { azulCyber, carmesiFuego, rosaNeon, retroVinyl, claroSuave }
 
@@ -126,7 +126,7 @@ class _AdagioAppState extends State<AdagioApp> {
 }
 
 // =============================================================================
-// PANTALLA PRINCIPAL
+// PANTALLA PRINCIPAL CON NAVEGACIÓN Y REPRODUCTOR
 // =============================================================================
 class MainMusicScreen extends StatefulWidget {
   final AppSkin currentSkin;
@@ -157,8 +157,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   int _currentIndex = -1;
 
   bool _showPlaylist = false;
-  int _selectedTab =
-      0; // 0: Todas, 1: Favoritas, 2: Más Escuchadas, 3: Por Género
+  int _selectedTab = 0;
   String? _selectedGenreName;
   List<SongModel> _genreSongs = [];
 
@@ -332,7 +331,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     }
   }
 
-  // REESCANEO Y ELIMINACIÓN DE ARCHIVOS INEXISTENTES
   Future<void> _scanAudioFiles() async {
     setState(() => _isLoading = true);
 
@@ -343,7 +341,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       ignoreCase: true,
     );
 
-    // Filtrar canciones de más de 10 seg y verificar existencia física en disco
     songs = songs.where((s) {
       if ((s.duration ?? 0) <= 10000) return false;
       return File(s.data).existsSync();
@@ -402,6 +399,9 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
       _incrementPlayCount(song.id);
 
+      // Asegurar que el reproductor no esté silenciado
+      await _audioPlayer.setVolume(1.0);
+
       final audioSource = AudioSource.uri(
         Uri.parse(song.data),
         tag: MediaItem(
@@ -418,7 +418,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
         await _audioPlayer.seek(Duration(seconds: startAtSecond));
       }
 
-      _audioPlayer.play();
+      await _audioPlayer.play();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error al reproducir audio: $e')),
@@ -800,7 +800,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
     return Column(
       children: [
-        // CABECERA Y REESCANEO (REFRESH)
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4),
           child: Row(
@@ -829,8 +828,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
             ],
           ),
         ),
-
-        // SELECTOR DE PESTAÑAS (TODAS, FAVORITAS, MÁS ESCUCHADAS, GÉNEROS)
         Container(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           padding: const EdgeInsets.all(4),
@@ -847,8 +844,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
             ],
           ),
         ),
-
-        // VISTA SEGÚN LA PESTAÑA SELECCIONADA
         Expanded(
           child: _selectedTab == 3 && _genreSongs.isEmpty
               ? ListView.builder(

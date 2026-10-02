@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Permisos de lectura de almacenamiento -->
+    <!-- Permisos de lectura de almacenamiento y audio -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
     
@@ -10,9 +10,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
-        android:label="adagio"
+        android:label="@string/app_name"
         android:name="${applicationName}"
-        android:icon="@mipmap/launcher_icon">
+        android:icon="@mipmap/ic_launcher">
 
         <activity
             android:name=".MainActivity"
@@ -30,7 +30,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Servicio para reproducción en segundo plano (AudioService) -->
+        <!-- Servicio de notificaciones multimedia nativo -->
         <service android:name="com.ryanheise.audioservice.AudioService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="true">

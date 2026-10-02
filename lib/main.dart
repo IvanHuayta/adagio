@@ -483,7 +483,11 @@ class _MainMusicScreenState extends State<MainMusicScreen>
             onPressed: () async {
               await _saveLastPlaybackState();
               _audioPlayer.stop();
-              exit(0);
+              if (Platform.isAndroid || Platform.isIOS) {
+                exit(0);
+              } else {
+                Navigator.pop(context);
+              }
             },
             child: const Text('Salir'),
           ),

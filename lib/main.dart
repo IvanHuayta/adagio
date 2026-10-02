@@ -1,24 +1,19 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:just_audio_background/just_audio_background.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  // Inicialización de notificaciones multimedia nativas y pantalla de bloqueo
-  await JustAudioBackground.init(
-    androidNotificationChannelId: 'com.adagio.music.channel.audio',
-    androidNotificationChannelName: 'Adagio Reproducción',
-    androidNotificationOngoing: true,
-    androidStopForegroundOnPause: false,
-  );
-
-  runApp(const AdagioApp());
+void main() {
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    runApp(const AdagioApp());
+  }, (error, stack) {
+    debugPrint('Error global capturado: $error');
+  });
 }
 
 // =============================================================================
@@ -141,8 +136,8 @@ class MainMusicScreen extends StatefulWidget {
 
 class _MainMusicScreenState extends State<MainMusicScreen>
     with TickerProviderStateMixin {
-  final AudioPlayer _audioPlayer = AudioPlayer();
-  final OnAudioQuery _audioQuery = OnAudioQuery();
+  late AudioPlayer _audioPlayer;
+  late OnAudioQuery _audioQuery;
 
   List<SongModel> _songs = [];
   Set<int> _favoriteSongIds = {};
@@ -165,6 +160,9 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   @override
   void initState() {
     super.initState();
+    _audioPlayer = AudioPlayer();
+    _audioQuery = OnAudioQuery();
+
     _rotationController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 12),
@@ -175,34 +173,45 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       duration: const Duration(milliseconds: 700),
     )..repeat(reverse: true);
 
-    _loadUserData();
-    _requestPermissionAndScan();
+    _initApp();
+  }
 
-    _audioPlayer.playerStateStream.listen((state) {
-      if (state.playing) {
-        _rotationController.repeat();
-        if (!_waveController.isAnimating) _waveController.repeat(reverse: true);
-      } else {
-        _rotationController.stop();
-        _waveController.stop();
-        _saveLastPlaybackState();
-      }
+  Future<void> _initApp() async {
+    try {
+      await _loadUserData();
+      await _requestPermissionAndScan();
 
-      if (state.processingState == ProcessingState.completed) {
-        _playNext();
-      }
-    });
+      _audioPlayer.playerStateStream.listen((state) {
+        if (!mounted) return;
+        if (state.playing) {
+          _rotationController.repeat();
+          if (!_waveController.isAnimating)
+            _waveController.repeat(reverse: true);
+        } else {
+          _rotationController.stop();
+          _waveController.stop();
+          _saveLastPlaybackState();
+        }
 
-    _audioPlayer.positionStream.listen((position) {
-      if (_isDjMix && _audioPlayer.playing && !_isTransitioning) {
-        final duration = _audioPlayer.duration ?? Duration.zero;
-        if (duration.inSeconds > 50) {
-          if (duration.inSeconds - position.inSeconds <= 20) {
-            _triggerDjMixTransition();
+        if (state.processingState == ProcessingState.completed) {
+          _playNext();
+        }
+      });
+
+      _audioPlayer.positionStream.listen((position) {
+        if (_isDjMix && _audioPlayer.playing && !_isTransitioning) {
+          final duration = _audioPlayer.duration ?? Duration.zero;
+          if (duration.inSeconds > 50) {
+            if (duration.inSeconds - position.inSeconds <= 20) {
+              _triggerDjMixTransition();
+            }
           }
         }
-      }
-    });
+      });
+    } catch (e) {
+      debugPrint("Error inicializando app: $e");
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -215,40 +224,35 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   }
 
   Future<void> _saveLastPlaybackState() async {
-    if (_currentIndex < 0 || _currentIndex >= _songs.length) return;
-    final prefs = await SharedPreferences.getInstance();
-    final currentSong = _songs[_currentIndex];
-    final positionMs = _audioPlayer.position.inMilliseconds;
+    try {
+      if (_currentIndex < 0 || _currentIndex >= _songs.length) return;
+      final prefs = await SharedPreferences.getInstance();
+      final currentSong = _songs[_currentIndex];
+      final positionMs = _audioPlayer.position.inMilliseconds;
 
-    await prefs.setInt('adagio_last_song_id', currentSong.id);
-    await prefs.setInt('adagio_last_position_ms', positionMs);
+      await prefs.setInt('adagio_last_song_id', currentSong.id);
+      await prefs.setInt('adagio_last_position_ms', positionMs);
+    } catch (_) {}
   }
 
   Future<void> _restoreLastPlaybackState() async {
-    final prefs = await SharedPreferences.getInstance();
-    final lastSongId = prefs.getInt('adagio_last_song_id');
-    final lastPositionMs = prefs.getInt('adagio_last_position_ms') ?? 0;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final lastSongId = prefs.getInt('adagio_last_song_id');
+      final lastPositionMs = prefs.getInt('adagio_last_position_ms') ?? 0;
 
-    if (lastSongId != null && _songs.isNotEmpty) {
-      int index = _songs.indexWhere((s) => s.id == lastSongId);
-      if (index != -1) {
-        final song = _songs[index];
-        setState(() => _currentIndex = index);
+      if (lastSongId != null && _songs.isNotEmpty) {
+        int index = _songs.indexWhere((s) => s.id == lastSongId);
+        if (index != -1) {
+          final song = _songs[index];
+          if (mounted) setState(() => _currentIndex = index);
 
-        final audioSource = AudioSource.uri(
-          Uri.parse(song.data),
-          tag: MediaItem(
-            id: song.id.toString(),
-            album: song.album ?? "Adagio",
-            title: song.title,
-            artist: song.artist ?? "Adagio Player",
-          ),
-        );
-
-        await _audioPlayer.setAudioSource(audioSource);
-        await _audioPlayer.seek(Duration(milliseconds: lastPositionMs));
+          await _audioPlayer
+              .setAudioSource(AudioSource.uri(Uri.parse(song.data)));
+          await _audioPlayer.seek(Duration(milliseconds: lastPositionMs));
+        }
       }
-    }
+    } catch (_) {}
   }
 
   Future<void> _triggerDjMixTransition() async {
@@ -273,26 +277,32 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   }
 
   Future<void> _loadUserData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final favsList = prefs.getStringList('adagio_favorites') ?? [];
-    setState(() {
-      _favoriteSongIds = favsList.map((id) => int.parse(id)).toSet();
-    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final favsList = prefs.getStringList('adagio_favorites') ?? [];
+      if (mounted) {
+        setState(() {
+          _favoriteSongIds = favsList.map((id) => int.parse(id)).toSet();
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _toggleFavorite(int songId) async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      if (_favoriteSongIds.contains(songId)) {
-        _favoriteSongIds.remove(songId);
-      } else {
-        _favoriteSongIds.add(songId);
-      }
-    });
-    await prefs.setStringList(
-      'adagio_favorites',
-      _favoriteSongIds.map((id) => id.toString()).toList(),
-    );
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      setState(() {
+        if (_favoriteSongIds.contains(songId)) {
+          _favoriteSongIds.remove(songId);
+        } else {
+          _favoriteSongIds.add(songId);
+        }
+      });
+      await prefs.setStringList(
+        'adagio_favorites',
+        _favoriteSongIds.map((id) => id.toString()).toList(),
+      );
+    } catch (_) {}
   }
 
   Future<void> _incrementPlayCount(int songId) async {
@@ -302,42 +312,54 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   }
 
   Future<void> _requestPermissionAndScan() async {
-    PermissionStatus status = await Permission.audio.request();
-    if (!status.isGranted) {
-      status = await Permission.storage.request();
-    }
+    try {
+      PermissionStatus status = await Permission.audio.request();
+      if (!status.isGranted) {
+        status = await Permission.storage.request();
+      }
 
-    if (await Permission.notification.isDenied) {
-      await Permission.notification.request();
-    }
+      if (await Permission.notification.isDenied) {
+        await Permission.notification.request();
+      }
 
-    setState(() {
-      _hasPermission = status.isGranted;
-    });
+      if (mounted) {
+        setState(() {
+          _hasPermission = status.isGranted;
+        });
+      }
 
-    if (_hasPermission) {
-      await _scanAudioFiles();
-      await _restoreLastPlaybackState();
-    } else {
-      setState(() => _isLoading = false);
+      if (_hasPermission) {
+        await _scanAudioFiles();
+        await _restoreLastPlaybackState();
+      } else {
+        if (mounted) setState(() => _isLoading = false);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _scanAudioFiles() async {
-    setState(() => _isLoading = true);
-    List<SongModel> songs = await _audioQuery.querySongs(
-      sortType: SongSortType.TITLE,
-      orderType: OrderType.ASC_OR_SMALLER,
-      uriType: UriType.EXTERNAL,
-      ignoreCase: true,
-    );
+    if (mounted) setState(() => _isLoading = true);
+    try {
+      List<SongModel> songs = await _audioQuery.querySongs(
+        sortType: SongSortType.TITLE,
+        orderType: OrderType.ASC_OR_SMALLER,
+        uriType: UriType.EXTERNAL,
+        ignoreCase: true,
+      );
 
-    songs = songs.where((s) => (s.duration ?? 0) > 10000).toList();
+      songs = songs.where((s) => (s.duration ?? 0) > 10000).toList();
 
-    setState(() {
-      _songs = songs;
-      _isLoading = false;
-    });
+      if (mounted) {
+        setState(() {
+          _songs = songs;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   List<SongModel> _getFilteredSongs() {
@@ -365,17 +387,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
       _incrementPlayCount(song.id);
 
-      final audioSource = AudioSource.uri(
-        Uri.parse(song.data),
-        tag: MediaItem(
-          id: song.id.toString(),
-          album: song.album ?? "Adagio",
-          title: song.title,
-          artist: song.artist ?? "Adagio Player",
-        ),
-      );
-
-      await _audioPlayer.setAudioSource(audioSource);
+      await _audioPlayer.setAudioSource(AudioSource.uri(Uri.parse(song.data)));
 
       if (startAtSecond > 0) {
         await _audioPlayer.seek(Duration(seconds: startAtSecond));
@@ -383,9 +395,11 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
       _audioPlayer.play();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al reproducir audio: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al reproducir audio: $e')),
+        );
+      }
     }
   }
 
@@ -486,7 +500,7 @@ class _MainMusicScreenState extends State<MainMusicScreen>
               if (Platform.isAndroid || Platform.isIOS) {
                 exit(0);
               } else {
-                Navigator.pop(context);
+                if (mounted) Navigator.pop(context);
               }
             },
             child: const Text('Salir'),

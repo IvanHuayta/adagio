@@ -1,24 +1,17 @@
 name: adagio
-description: "A new Flutter project."
+description: "Adagio Music Player"
 publish_to: 'none'
-
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.5.0
+  sdk: '>=3.0.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
-
-  # Reproducción de audio y permisos
   just_audio: ^0.9.46
-  just_audio_background: ^0.0.1-beta.13
   on_audio_query: ^2.9.0
   permission_handler: ^11.3.1
-  audio_service: ^0.18.12
-  
-  # Almacenamiento local para favoritos
   shared_preferences: ^2.2.2
 
 dev_dependencies:
@@ -27,7 +20,6 @@ dev_dependencies:
   flutter_lints: ^4.0.0
   flutter_launcher_icons: "^0.13.1"
 
-# Configuración del ícono (debe ir al margen izquierdo, fuera de dev_dependencies)
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
@@ -36,7 +28,5 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
-
-  # Assets para el logo
   assets:
     - assets/icon/

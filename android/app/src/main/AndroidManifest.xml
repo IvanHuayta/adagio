@@ -1,16 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Permisos de lectura de almacenamiento y audio -->
+    <!-- Permisos de almacenamiento y audio -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
     
-    <!-- Permisos para reproducción en segundo plano y pantalla de bloqueo -->
+    <!-- Permisos para reproducción en segundo plano y barra multimedia -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
-        android:label="@string/app_name"
+        android:label="Adagio"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
@@ -30,24 +30,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Servicio de notificaciones multimedia nativo -->
-        <service android:name="com.ryanheise.audioservice.AudioService"
-            android:foregroundServiceType="mediaPlayback"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.media.browse.MediaBrowserService" />
-            </intent-filter>
-        </service>
-
-        <!-- Receptor para botones multimedia de audífonos y pantalla de bloqueo -->
-        <receiver android:name="com.ryanheise.audioservice.MediaButtonReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Embedding v2 de Flutter -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

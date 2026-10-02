@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:audio_service/audio_service.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -113,7 +114,7 @@ class _AdagioAppState extends State<AdagioApp> {
 }
 
 // =============================================================================
-// PANTALLA PRINCIPAL CON NAVEGACIÓN Y REPRODUCTOR
+// PANTALLA PRINCIPAL
 // =============================================================================
 class MainMusicScreen extends StatefulWidget {
   final AppSkin currentSkin;
@@ -143,9 +144,9 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   int _currentIndex = -1;
 
   bool _showPlaylist = false;
-  int _selectedTab = 0; // 0: Todas, 1: Favoritas, 2: Más Escuchadas
+  int _selectedTab = 0;
   bool _isShuffle = false;
-  bool _isDjMix = false; // MODO DJ MIX AUTOMÁTICO
+  bool _isDjMix = false;
   bool _isTransitioning = false;
   LoopMode _loopMode = LoopMode.off;
 
@@ -182,7 +183,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
       }
     });
 
-    // MONITOR DE POSICIÓN PARA MODO DJ MIX
     _audioPlayer.positionStream.listen((position) {
       if (_isDjMix && _audioPlayer.playing && !_isTransitioning) {
         final duration = _audioPlayer.duration ?? Duration.zero;
@@ -254,9 +254,15 @@ class _MainMusicScreenState extends State<MainMusicScreen>
   }
 
   Future<void> _requestPermissionAndScan() async {
-    PermissionStatus status = await Permission.storage.request();
+    // Solicitar permiso de almacenamiento de audio
+    PermissionStatus status = await Permission.audio.request();
     if (!status.isGranted) {
-      status = await Permission.audio.request();
+      status = await Permission.storage.request();
+    }
+
+    // Pedir permiso explícito de notificaciones (Android 13+)
+    if (await Permission.notification.isDenied) {
+      await Permission.notification.request();
     }
 
     setState(() {
@@ -312,7 +318,20 @@ class _MainMusicScreenState extends State<MainMusicScreen>
 
       _incrementPlayCount(song.id);
 
-      await _audioPlayer.setAudioSource(AudioSource.uri(Uri.parse(song.data)));
+      // Crear el AudioSource vinculando los metadatos de MediaItem para Android
+      final audioSource = AudioSource.uri(
+        Uri.parse(song.data),
+        tag: MediaItem(
+          id: song.id.toString(),
+          album: song.album ?? "Adagio Album",
+          title: song.title,
+          artist: song.artist ?? "Artista Desconocido",
+          artUri: Uri.parse(
+              'content://media/external/audio/media/${song.id}/albumart'),
+        ),
+      );
+
+      await _audioPlayer.setAudioSource(audioSource);
 
       if (startAtSecond > 0) {
         await _audioPlayer.seek(Duration(seconds: startAtSecond));
@@ -343,7 +362,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     _playSongAtIndex(prevIndex, _songs);
   }
 
-  // DIÁLOGO ACERCA DE LA APLICACIÓN
   void _showAboutDialog(SkinTheme theme) {
     showDialog(
       context: context,
@@ -467,7 +485,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
           ),
         ),
         actions: [
-          // BOTÓN DJ MIX SIN NINGUNA MARCA REGISTRADA
           IconButton(
             icon: Icon(
               Icons.auto_awesome,
@@ -548,14 +565,12 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     );
   }
 
-  // VISTA PRINCIPAL
   Widget _buildPlayerView(SkinTheme theme, SongModel? song) {
     bool isFav = song != null && _favoriteSongIds.contains(song.id);
 
     return Column(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
-        // DISCO GIRATORIO
         Container(
           margin: const EdgeInsets.symmetric(vertical: 8),
           child: RotationTransition(
@@ -592,8 +607,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
             ),
           ),
         ),
-
-        // TITULO Y ARTISTA
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 28.0),
           child: Row(
@@ -633,8 +646,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
             ],
           ),
         ),
-
-        // ESPECTRO DE ONDAS
         _buildVisualizerAnimation(theme),
       ],
     );
@@ -809,7 +820,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     );
   }
 
-  // CONTROLES DE REPRODUCCIÓN
   Widget _buildExpandedBottomControls(SkinTheme theme, SongModel? song) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -930,7 +940,6 @@ class _MainMusicScreenState extends State<MainMusicScreen>
     );
   }
 
-  // ECUALIZADOR
   void _openEqualizerModal(BuildContext context, SkinTheme theme) {
     showModalBottomSheet(
       context: context,
